@@ -10,7 +10,6 @@ use std::{
 };
 fn main() -> io::Result<()> {
     //load the buffer from file or to nothing
-    let buffer = load_buffer();
 
     //setup terminal and get handle to stdout
     terminal::enable_raw_mode()?;
@@ -20,14 +19,14 @@ fn main() -> io::Result<()> {
     stdout.execute(cursor::MoveTo(0, 0))?;
 
     //for now, defaulting to insert mode
-    insert_mode(buffer, stdout)?;
+    insert_mode(Buffer::new(), stdout)?;
     Ok(())
 }
 fn load_buffer() -> String {
     let buf = String::new();
     return buf;
 }
-fn insert_mode(mut buffer: String, mut stdout: Stdout) -> io::Result<()> {
+fn insert_mode(mut buffer: Buffer, mut stdout: Stdout) -> io::Result<()> {
     loop {
         //refresh the buffer on screen.
         stdout.flush()?; //flush the buffer, ensureing everything is correctly placed before moving
@@ -45,16 +44,15 @@ fn insert_mode(mut buffer: String, mut stdout: Stdout) -> io::Result<()> {
                 event::KeyCode::Backspace => {
                     let char_being_removed = buffer.pop();
                     match char_being_removed {
-                        Some('\n') => {
+                        '\n' => {
                             stdout.execute(cursor::MoveToPreviousLine(1))?;
                         }
-                        Some(_c) => {
+                        _ => {
                             //the char doesnt really matter
                             stdout.execute(cursor::MoveLeft(1))?;
                             stdout.write(" ".as_bytes())?; //clear visually
                             stdout.execute(cursor::MoveLeft(1))?; //have to do this again
                         }
-                        _ => {}
                     }
                 }
                 event::KeyCode::Esc => break,
@@ -62,6 +60,32 @@ fn insert_mode(mut buffer: String, mut stdout: Stdout) -> io::Result<()> {
             }
         }
     }
-    println!("The contents of the buffer:\n{}", buffer);
     Ok(())
+}
+
+struct Buffer {
+    lines: Vec<String>,
+    total_lines: usize,
+    current_line: usize,
+    current_col: usize,
+}
+impl Buffer {
+    fn new() -> Buffer {
+        Buffer {
+            lines: vec![String::new()], //creates default empty line
+            total_lines: 0,
+            current_line: 0,
+            current_col: 0,
+        }
+    }
+    fn push(&mut self, c: char) {
+        self.lines.get_mut(self.current_line).unwrap().push(c);
+    }
+    fn pop(&mut self) -> char {
+        self.lines
+            .get_mut(self.current_line)
+            .unwrap()
+            .pop()
+            .unwrap()
+    }
 }
