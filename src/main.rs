@@ -38,8 +38,9 @@ fn insert_mode(mut buffer: Buffer, mut stdout: Stdout) -> io::Result<()> {
                     stdout.write(c.to_string().as_bytes())?;
                 }
                 event::KeyCode::Enter => {
-                    buffer.push('\n');
-                    stdout.execute(cursor::MoveToNextLine(1))?;
+                    buffer
+                        .newline(&mut stdout)
+                        .expect("failed to buffer.newline()");
                 }
                 event::KeyCode::Backspace => {
                     let char_being_removed = buffer.pop();
@@ -55,7 +56,10 @@ fn insert_mode(mut buffer: Buffer, mut stdout: Stdout) -> io::Result<()> {
                         }
                     }
                 }
-                event::KeyCode::Esc => break,
+                event::KeyCode::Esc => {
+                    buffer.display();
+                    break;
+                }
                 _ => {}
             }
         }
@@ -80,6 +84,7 @@ impl Buffer {
     }
     fn push(&mut self, c: char) {
         self.lines.get_mut(self.current_line).unwrap().push(c);
+        self.current_col += 1;
     }
     fn pop(&mut self) -> char {
         self.lines
@@ -87,5 +92,25 @@ impl Buffer {
             .unwrap()
             .pop()
             .unwrap()
+    }
+    fn newline(&mut self, stdout: &mut Stdout) -> io::Result<()> {
+        //function for moving to the next line when enter pressed.
+        self.current_line += 1;
+        self.current_col = 0;
+        self.total_lines += 1;
+        stdout.execute(cursor::MoveToNextLine(1))?;
+        if self.lines.len() <= self.current_line {
+            self.lines.push(String::new());
+        }
+
+        Ok(())
+    }
+    fn display(&self) {
+        //for debugging, just write everything in the bufferf
+        let mut i = 0;
+        for line in self.lines.clone() {
+            println!("{}: {}", i, line);
+            i += 1;
+        }
     }
 }
