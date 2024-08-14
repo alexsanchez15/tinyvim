@@ -230,11 +230,23 @@ impl Buffer {
                 self.current_col = self.lines.get(self.current_line).unwrap().len();
                 self.update_cursor(stdout)?;
             } else {
-                self.pop();
-                stdout.execute(cursor::MoveLeft(1))?;
-                stdout.write(" ".as_bytes())?; //clear visually
-                stdout.execute(cursor::MoveLeft(1))?; //have to do this again
+                //split the line pop from the first line and clear the rest and then combine them
+                //back is the idea
+                let cline = self.lines.get_mut(self.current_line).unwrap();
+                let (s1, s2) = cline.split_at(self.current_col);
+                let s2_clone = s2.to_string().clone();
+                let mut new_line = s1.to_string();
+                new_line.pop();
+                new_line.push_str(s2);
+                *cline = new_line;
+                //'move' the text back one
                 self.current_col -= 1;
+                self.update_cursor(stdout)?;
+                stdout.execute(cursor::SavePosition)?;
+                stdout.execute(terminal::Clear(ClearType::UntilNewLine))?;
+                stdout.flush()?;
+                stdout.write(s2_clone.as_bytes())?;
+                stdout.execute(cursor::RestorePosition)?;
             }
         }
         Ok(())
