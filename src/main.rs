@@ -166,14 +166,39 @@ impl Buffer {
     }
     fn newline(&mut self, stdout: &mut Stdout) -> io::Result<()> {
         //function for moving to the next line when enter pressed.
-        self.current_line += 1;
-        self.current_col = 0;
-        self.total_lines += 1;
-        stdout.execute(cursor::MoveToNextLine(1))?;
-        if self.lines.len() <= self.current_line {
-            self.lines.push(String::new());
+        //first thing needed: put a new line onto the lines vector
+        self.lines.push(String::new());
+        //get the contents of the line that will be moved down(can be nothing)
+
+        //^this needs to happen to avoid some conflicts
+        //move everything under the current line down one
+        let mut i = self.total_lines;
+        while i > self.current_line {
+            let line_contents = self.lines.get(i).expect("l1e").to_string();
+            self.lines
+                .get_mut(i + 1)
+                .expect("l2e")
+                .push_str(&line_contents);
+            self.lines.get_mut(i).unwrap().clear();
+            i -= 1;
         }
 
+        let (_, contents) = self
+            .lines
+            .get(self.current_line)
+            .unwrap()
+            .split_at(self.current_col);
+        let contents_clone = contents.to_string().clone();
+        self.current_line += 1;
+        self.update_cursor(stdout)?;
+        //        self.total_lines += 1;
+
+        if !contents_clone.is_empty() {
+            self.lines
+                .get_mut(self.current_line)
+                .unwrap()
+                .push_str(&contents_clone);
+        }
         Ok(())
     }
     fn backspace(&mut self, stdout: &mut Stdout) -> io::Result<()> {
