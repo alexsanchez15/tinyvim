@@ -1,3 +1,5 @@
+use core::fmt;
+mod normal_mode;
 use crossterm::{
     cursor::{self, SetCursorShape},
     event, execute,
@@ -18,21 +20,45 @@ fn main() -> io::Result<()> {
     stdout.execute(terminal::Clear(ClearType::All))?; //clear the stdout
     stdout.execute(cursor::Show)?;
     stdout.execute(cursor::MoveTo(0, 0))?;
+    let mut status_line = StatusLine::new();
+    status_line.write_status(&mut stdout)?;
+    //change mode function would be ideal
+    //for now, this will do
 
     //for now, defaulting to insert mode
-    insert_mode(Buffer::new(), &mut stdout)?;
+    let buffer = Buffer::new();
+    change_mode(Status::Insert, buffer, &mut stdout, &mut status_line)?;
     Ok(())
 }
+fn change_mode(
+    status: Status,
+    buffer: Buffer,
+    stdout: &mut Stdout,
+    status_line: &mut StatusLine,
+) -> io::Result<()> {
+    match status {
+        Status::Insert => insert_mode(buffer, stdout, status_line)?,
+        Status::Normal => (),
+        Status::Visual => (),
+    }
+    Ok(())
+}
+
 fn load_buffer() -> String {
     let buf = String::new();
     return buf;
 }
 
-fn insert_mode(mut buffer: Buffer, mut stdout: &mut Stdout) -> io::Result<()> {
+fn insert_mode(
+    mut buffer: Buffer,
+    mut stdout: &mut Stdout,
+    status_line: &mut StatusLine,
+) -> io::Result<()> {
     stdout
         .execute(cursor::SetCursorShape(cursor::CursorShape::Line))
         .expect("error turning cursor into line");
-
+    //set the status line to refelct that now in insert node FIXME situation
+    status_line.change_status(Status::Insert);
     loop {
         //refresh the buffer on screen.
         stdout.flush()?; //flush the buffer, ensureing everything is correctly placed before moving
@@ -88,9 +114,52 @@ fn insert_mode(mut buffer: Buffer, mut stdout: &mut Stdout) -> io::Result<()> {
                 }
                 _ => {}
             }
+            status_line.write_status(stdout)?;
         }
     }
     Ok(())
+}
+enum Status {
+    Normal,
+    Insert,
+    Visual,
+}
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Status::Visual => "VISUAL",
+            Status::Normal => "NORMAL",
+            Status::Insert => "INSERT",
+        };
+        write!(f, "{}", name)
+    }
+}
+struct StatusLine {
+    //enumerated things
+    status: Status,
+    rows: u16,
+    cols: u16,
+}
+impl StatusLine {
+    fn new() -> StatusLine {
+        let (cols, rows) = terminal::size().unwrap();
+        StatusLine {
+            status: Status::Normal,
+            rows,
+            cols,
+        }
+    }
+    fn write_status(&mut self, stdout: &mut Stdout) -> io::Result<()> {
+        stdout.execute(cursor::SavePosition)?;
+        stdout.execute(cursor::MoveTo(0, self.rows))?;
+        stdout
+            .write(format!("{} -- 'filename' -current row and column-", self.status).as_bytes())?;
+        stdout.execute(cursor::RestorePosition)?;
+        Ok(())
+    }
+    fn change_status(&mut self, status: Status) {
+        self.status = status;
+    }
 }
 
 struct Buffer {
@@ -183,25 +252,46 @@ impl Buffer {
             i -= 1;
         }
 
-        let (_, contents) = self
+        //delete everything under the cursor and have it written on the next line down
+        self.update_cursor(stdout)?; //because the last thing confuses the cursor :p
+        stdout.execute(terminal::Clear(ClearType::FromCursorDown))?;
+        //write the text on the line down one line if its being moved (if necessary)
+        let (s1, s2) = self
             .lines
-            .get(self.current_line)
+            .get_mut(self.current_line)
             .unwrap()
             .split_at(self.current_col);
-        let contents_clone = contents.to_string().clone();
+        let s1_clone = s1.to_string().clone(); //need these two lines to avoid ownership issues
+        let s2_clone = s2.to_string().clone();
+        self.lines.get_mut(self.current_line).unwrap().clear();
+        self.lines
+            .get_mut(self.current_line)
+            .unwrap()
+            .push_str(&s1_clone);
+        self.lines
+            .get_mut(self.current_line + 1)
+            .unwrap()
+            .push_str(&s2_clone);
+        //after everything is moved down a line, move the cursor down one.
         self.current_line += 1;
+        self.total_lines += 1;
+        self.current_col = 0;
         self.update_cursor(stdout)?;
-        //        self.total_lines += 1;
 
-        if !contents_clone.is_empty() {
-            self.lines
-                .get_mut(self.current_line)
-                .unwrap()
-                .push_str(&contents_clone);
+        //'move' the lines down one (just print them again after clearing)
+        i = self.current_line;
+        while i <= self.total_lines {
+            stdout.flush()?;
+            stdout.write(self.lines.get(i).unwrap().as_bytes())?;
+            stdout.execute(cursor::MoveToNextLine(1))?;
+            i += 1;
         }
+        self.update_cursor(stdout)?;
+
         Ok(())
     }
     fn backspace(&mut self, stdout: &mut Stdout) -> io::Result<()> {
+        self.update_cursor(stdout)?;
         if cursor::position().unwrap() == (0, 0) {
             //nothing to backspace.
             return Ok(());
@@ -209,7 +299,7 @@ impl Buffer {
         if self.current_col == self.lines.get(self.current_line).unwrap().len() {
             if self.current_col < 1 {
                 //delete a line
-                if self.total_lines <= 1 {
+                if self.total_lines <= 0 {
                     return Ok(());
                 }
                 self.lines.remove(self.current_line);
