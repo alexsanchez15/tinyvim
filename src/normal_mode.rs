@@ -16,7 +16,10 @@ pub fn normal_mode(
     loop {
         if let event::Event::Key(key) = event::read()? {
             match key.code {
-                event::KeyCode::Char(':') => { //enter 'Ex' mode
+                event::KeyCode::Char(':') => {
+                    //enter 'Ex' mode
+                    status_line.write_commands(stdout)?;
+                    //process command(command)
                 }
                 event::KeyCode::Enter => {
                     buffer

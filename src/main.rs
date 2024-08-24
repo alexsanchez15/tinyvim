@@ -179,14 +179,30 @@ impl StatusLine {
         self.status = status;
     }
     fn write_commands(&mut self, stdout: &mut Stdout) -> io::Result<String> {
+        let mut command = String::new();
         //wait until user presses enter, keep a
         execute!(stdout, cursor::SavePosition)?;
-        let mut command = String::new();
+        stdout.execute(cursor::MoveTo(0, self.rows - 1))?;
+        //self.rows-1 is where this will exit
         loop {
+            //basic buffer editing stuff
             if let Ok(event::Event::Key(key)) = event::read() {
                 match key.code {
                     event::KeyCode::Char(c) => {
                         command.push(c);
+                        stdout.write_all(c.to_string().as_bytes())?;
+                        stdout.flush()?;
+                    }
+                    event::KeyCode::Backspace => {
+                        command.pop();
+                        execute!(
+                            stdout,
+                            cursor::MoveLeft(1),
+                            terminal::Clear(terminal::ClearType::UntilNewLine)
+                        )?;
+                    }
+                    event::KeyCode::Esc => {
+                        return Ok("".to_string()); //return an empty string
                     }
                     event::KeyCode::Enter => {
                         break;
@@ -195,6 +211,7 @@ impl StatusLine {
                 }
             }
         }
+        stdout.execute(cursor::RestorePosition)?;
         Ok(command)
     }
     fn write_to_status_line(&mut self, stdout: &mut Stdout, string: String) -> io::Result<()> {
