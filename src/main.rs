@@ -1,5 +1,6 @@
 use core::fmt;
 mod normal_mode;
+
 use crossterm::{
     cursor::{self, SetCursorShape},
     event, execute,
@@ -21,26 +22,33 @@ fn main() -> io::Result<()> {
     stdout.execute(cursor::Show)?;
     stdout.execute(cursor::MoveTo(0, 0))?;
     let mut status_line = StatusLine::new();
-    status_line.write_status(&mut stdout)?;
     //change mode function would be ideal
     //for now, this will do
 
     //for now, defaulting to insert mode
-    let buffer = Buffer::new();
-    change_mode(Status::Insert, buffer, &mut stdout, &mut status_line)?;
+    let mut buffer = Buffer::new();
+    change_mode(Status::Insert, &mut buffer, &mut stdout, &mut status_line)?;
     Ok(())
 }
 fn change_mode(
     status: Status,
-    buffer: Buffer,
+    buffer: &mut Buffer,
     stdout: &mut Stdout,
     status_line: &mut StatusLine,
 ) -> io::Result<()> {
     match status {
-        Status::Insert => insert_mode(buffer, stdout, status_line)?,
-        Status::Normal => (),
+        Status::Insert => {
+            status_line.change_status(Status::Insert);
+            insert_mode(buffer, stdout, status_line)?;
+        }
+        Status::Normal => {
+            status_line.change_status(Status::Normal);
+            normal_mode::normal_mode(buffer, stdout, status_line)?;
+        }
         Status::Visual => (),
     }
+
+    status_line.write_status(stdout)?;
     Ok(())
 }
 
@@ -50,7 +58,7 @@ fn load_buffer() -> String {
 }
 
 fn insert_mode(
-    mut buffer: Buffer,
+    buffer: &mut Buffer,
     mut stdout: &mut Stdout,
     status_line: &mut StatusLine,
 ) -> io::Result<()> {
@@ -84,9 +92,8 @@ fn insert_mode(
                     buffer.backspace(&mut stdout)?;
                 }
                 event::KeyCode::Esc => {
-                    println!();
-                    buffer.display();
-                    break;
+                    break; //not really sure if this break is necessary, but keeping it to avoid
+                           //annoying lines everywhere about this loop being unescapable.
                 }
                 event::KeyCode::Up => {
                     if buffer.current_line != 0 {
@@ -117,6 +124,8 @@ fn insert_mode(
             status_line.write_status(stdout)?;
         }
     }
+
+    change_mode(Status::Normal, buffer, &mut stdout, status_line)?;
     Ok(())
 }
 enum Status {
@@ -151,14 +160,47 @@ impl StatusLine {
     }
     fn write_status(&mut self, stdout: &mut Stdout) -> io::Result<()> {
         stdout.execute(cursor::SavePosition)?;
-        stdout.execute(cursor::MoveTo(0, self.rows))?;
-        stdout
-            .write(format!("{} -- 'filename' -current row and column-", self.status).as_bytes())?;
+        stdout.execute(cursor::MoveTo(0, self.rows - 2))?;
+        stdout.execute(crossterm::style::SetBackgroundColor(
+            crossterm::style::Color::Red,
+        ))?;
+        stdout.write(
+            format!(
+                "{} -- 'filename' -current row: {} and column-",
+                self.status, self.rows
+            )
+            .as_bytes(),
+        )?;
+        stdout.execute(crossterm::style::ResetColor)?;
         stdout.execute(cursor::RestorePosition)?;
         Ok(())
     }
     fn change_status(&mut self, status: Status) {
         self.status = status;
+    }
+    fn write_commands(&mut self, stdout: &mut Stdout) -> io::Result<String> {
+        //wait until user presses enter, keep a
+        execute!(stdout, cursor::SavePosition)?;
+        let mut command = String::new();
+        loop {
+            if let Ok(event::Event::Key(key)) = event::read() {
+                match key.code {
+                    event::KeyCode::Char(c) => {
+                        command.push(c);
+                    }
+                    event::KeyCode::Enter => {
+                        break;
+                    }
+                    _ => (),
+                }
+            }
+        }
+        Ok(command)
+    }
+    fn write_to_status_line(&mut self, stdout: &mut Stdout, string: String) -> io::Result<()> {
+        stdout.write_all(string.as_bytes())?;
+        Ok(())
+        //THIS METHOD IS UNFINISHED FIXME
     }
 }
 
