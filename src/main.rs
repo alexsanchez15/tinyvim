@@ -1,32 +1,38 @@
 use core::fmt;
 mod normal_mode;
-
 use crossterm::{
     cursor::{self, SetCursorShape},
     event, execute,
     terminal::{self, ClearType},
     ExecutableCommand,
 };
-use std::{io::Stdout, thread::sleep};
+use std::{env, fs};
+use std::{fs::File, io::Stdout, thread::sleep};
 use std::{
-    io::{self, Write},
+    io::{self, BufRead, BufReader, Write},
     time::Duration,
 };
 fn main() -> io::Result<()> {
-    //load the buffer from file or to nothing
-
-    //setup terminal and get handle to stdout
-    terminal::enable_raw_mode()?;
+    //set up the environemt (clear the area and stuff) and get stdout handle
     let mut stdout = io::stdout(); //get a handle to the stdout file
     stdout.execute(terminal::Clear(ClearType::All))?; //clear the stdout
     stdout.execute(cursor::Show)?;
     stdout.execute(cursor::MoveTo(0, 0))?;
-    let mut status_line = StatusLine::new();
+    //load the buffer from file or to nothing
+    let args: Vec<String> = env::args().collect();
+    let mut buffer = match args.len() {
+        1 => Buffer::new(None, &mut stdout)?,
+        2 => Buffer::new(args.get(1).cloned(), &mut stdout)?,
+        _ => Buffer::new(None, &mut stdout)?, //for now, this is how >1 args is dealt with
+    };
+
+    //setup terminal and get handle to stdout
+    terminal::enable_raw_mode()?;
+    let mut status_line = StatusLine::new(&mut buffer);
     //change mode function would be ideal
     //for now, this will do
 
     //for now, defaulting to insert mode
-    let mut buffer = Buffer::new();
     change_mode(Status::Insert, &mut buffer, &mut stdout, &mut status_line)?;
     Ok(())
 }
@@ -38,11 +44,11 @@ fn change_mode(
 ) -> io::Result<()> {
     match status {
         Status::Insert => {
-            status_line.change_status(Status::Insert);
+            status_line.change_status(Status::Insert, stdout)?;
             insert_mode(buffer, stdout, status_line)?;
         }
         Status::Normal => {
-            status_line.change_status(Status::Normal);
+            status_line.change_status(Status::Normal, stdout)?;
             normal_mode::normal_mode(buffer, stdout, status_line)?;
         }
         Status::Visual => (),
@@ -50,11 +56,6 @@ fn change_mode(
 
     status_line.write_status(stdout)?;
     Ok(())
-}
-
-fn load_buffer() -> String {
-    let buf = String::new();
-    return buf;
 }
 
 fn insert_mode(
@@ -66,7 +67,6 @@ fn insert_mode(
         .execute(cursor::SetCursorShape(cursor::CursorShape::Line))
         .expect("error turning cursor into line");
     //set the status line to refelct that now in insert node FIXME situation
-    status_line.change_status(Status::Insert);
     loop {
         //refresh the buffer on screen.
         stdout.flush()?; //flush the buffer, ensureing everything is correctly placed before moving
@@ -124,8 +124,8 @@ fn insert_mode(
             status_line.write_status(stdout)?;
         }
     }
-
     change_mode(Status::Normal, buffer, &mut stdout, status_line)?;
+
     Ok(())
 }
 enum Status {
@@ -148,14 +148,16 @@ struct StatusLine {
     status: Status,
     rows: u16,
     cols: u16,
+    filename: String,
 }
 impl StatusLine {
-    fn new() -> StatusLine {
+    fn new(buffer: &mut Buffer) -> StatusLine {
         let (cols, rows) = terminal::size().unwrap();
         StatusLine {
             status: Status::Normal,
             rows,
             cols,
+            filename: buffer.filename.clone(),
         }
     }
     fn write_status(&mut self, stdout: &mut Stdout) -> io::Result<()> {
@@ -166,8 +168,8 @@ impl StatusLine {
         ))?;
         stdout.write(
             format!(
-                "{} -- 'filename' -current row: {} and column-",
-                self.status, self.rows
+                "{} -- '{}' -current row: {} and column-",
+                self.status, self.filename, self.rows
             )
             .as_bytes(),
         )?;
@@ -175,14 +177,24 @@ impl StatusLine {
         stdout.execute(cursor::RestorePosition)?;
         Ok(())
     }
-    fn change_status(&mut self, status: Status) {
+    fn change_status(&mut self, status: Status, stdout: &mut Stdout) -> io::Result<()> {
         self.status = status;
+        self.write_status(stdout)?;
+        Ok(())
     }
-    fn write_commands(&mut self, stdout: &mut Stdout) -> io::Result<String> {
+    fn write_commands(&mut self, stdout: &mut Stdout, start_char: char) -> io::Result<String> {
         let mut command = String::new();
+        //include the starting character
         //wait until user presses enter, keep a
-        execute!(stdout, cursor::SavePosition)?;
-        stdout.execute(cursor::MoveTo(0, self.rows - 1))?;
+        execute!(
+            stdout,
+            cursor::SavePosition,
+            cursor::MoveTo(0, self.rows - 1),
+            terminal::Clear(ClearType::CurrentLine)
+        )?;
+        command.push(start_char);
+        stdout.write_all(start_char.to_string().as_bytes())?;
+        stdout.flush()?;
         //self.rows-1 is where this will exit
         loop {
             //basic buffer editing stuff
@@ -202,6 +214,7 @@ impl StatusLine {
                         )?;
                     }
                     event::KeyCode::Esc => {
+                        stdout.execute(cursor::RestorePosition)?;
                         return Ok("".to_string()); //return an empty string
                     }
                     event::KeyCode::Enter => {
@@ -211,11 +224,18 @@ impl StatusLine {
                 }
             }
         }
+        stdout.execute(terminal::Clear(terminal::ClearType::CurrentLine))?;
         stdout.execute(cursor::RestorePosition)?;
         Ok(command)
     }
     fn write_to_status_line(&mut self, stdout: &mut Stdout, string: String) -> io::Result<()> {
+        execute!(
+            stdout,
+            cursor::SavePosition,
+            cursor::MoveTo(0, self.rows - 1)
+        )?;
         stdout.write_all(string.as_bytes())?;
+        stdout.execute(cursor::RestorePosition)?;
         Ok(())
         //THIS METHOD IS UNFINISHED FIXME
     }
@@ -226,15 +246,45 @@ struct Buffer {
     total_lines: usize,
     current_line: usize,
     current_col: usize,
+    filename: String,
 }
 impl Buffer {
-    fn new() -> Buffer {
-        Buffer {
-            lines: vec![String::new()], //creates default empty line
-            total_lines: 0,
+    fn new(name: Option<String>, stdout: &mut Stdout) -> io::Result<Buffer> {
+        let filename = name.unwrap_or("empty filename".to_string());
+        let mut total_lines: usize = 0;
+        let lines = match filename.as_str() {
+            "empty filename" => vec![String::new()],
+            _ => match fs::File::open(&filename) {
+                Ok(file) => {
+                    let mut buf = Vec::new();
+
+                    stdout.execute(cursor::SavePosition)?;
+                    let reader = BufReader::new(file);
+                    for line in reader.lines() {
+                        total_lines += 1;
+                        let line_clone = line.unwrap().clone(); //avoid conflicts
+                        stdout.write_all(line_clone.as_bytes())?;
+                        stdout.execute(cursor::MoveToNextLine(1))?;
+                        stdout.flush()?;
+                        buf.push(line_clone);
+                    }
+                    stdout.execute(cursor::RestorePosition)?;
+                    total_lines -= 1; //because its 0 based
+
+                    buf
+                }
+                Err(..) => vec![String::new()], //file not found, just make an empty buffer
+                                                //this is most likely just that they want to create a new file.
+            },
+        };
+
+        Ok(Buffer {
+            lines,
+            total_lines,
             current_line: 0,
             current_col: 0,
-        }
+            filename,
+        })
     }
     fn update_cursor(&mut self, stdout: &mut Stdout) -> io::Result<()> {
         if self.lines.get(self.current_line).unwrap().len() >= self.current_col {
@@ -275,7 +325,6 @@ impl Buffer {
                                //the new line (so genius man good job :#)
                                //clear the current line
             stdout.execute(cursor::SavePosition)?; //save that position
-            stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
             stdout.execute(cursor::MoveToColumn(0))?;
             stdout.write(self.lines.get(self.current_line).unwrap().as_bytes())?;
             stdout.execute(cursor::RestorePosition)?;
@@ -425,12 +474,22 @@ impl Buffer {
         }
         Ok(())
     }
-    fn display(&self) {
+    fn display(self) {
         //for debugging, just write everything in the bufferf
         let mut i = 0;
         for line in self.lines.clone() {
             println!("{}: {}", i, line);
             i += 1;
         }
+    }
+    fn write_to_file(&mut self) -> io::Result<()> {
+        //below line wants a clone, not really sure why. related to ownership of filenmae?
+        let name = self.filename.clone();
+        let mut file = fs::File::create(name)?;
+        for line in &self.lines {
+            //clone is needed to not move ownership
+            writeln!(file, "{}", line)?;
+        }
+        Ok(())
     }
 }
