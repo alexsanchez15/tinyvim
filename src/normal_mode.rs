@@ -13,7 +13,7 @@ pub fn normal_mode(
     status_line: &mut StatusLine,
 ) -> Result<()> {
     //make sure the status is set to normal, and its written
-    status_line.write_status(stdout)?;
+    status_line.write_status(stdout, buffer)?;
     //^ above lines may become obsolete i am thinking about how to handle this better
 
     loop {
@@ -28,6 +28,16 @@ pub fn normal_mode(
                     change_mode(Status::Insert, buffer, stdout, status_line)?;
                     break;
                 }
+                event::KeyCode::Char('D') => {
+                    buffer.scroll_buf(1, stdout)?;
+                }
+                event::KeyCode::Char('U') => {
+                    buffer.scroll_buf(-1, stdout)?; //scroll up (keybind to be changed)
+                }
+                event::KeyCode::Char('p') => {
+                    status_line
+                        .write_to_status_line(stdout, format!("{}", buffer.get_current_line()?))?;
+                }
                 event::KeyCode::Enter => {
                     buffer
                         .newline(&mut stdout)
@@ -37,7 +47,7 @@ pub fn normal_mode(
                 _ => (),
             }
         }
-        status_line.write_status(stdout)?;
+        status_line.write_status(stdout, buffer)?;
     }
     Ok(())
 }

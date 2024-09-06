@@ -3,7 +3,7 @@ mod normal_mode;
 use crossterm::{
     cursor::{self, SetCursorShape},
     event, execute,
-    terminal::{self, ClearType},
+    terminal::{self, Clear, ClearType},
     ExecutableCommand,
 };
 use std::{env, fs};
@@ -44,17 +44,17 @@ fn change_mode(
 ) -> io::Result<()> {
     match status {
         Status::Insert => {
-            status_line.change_status(Status::Insert, stdout)?;
+            status_line.change_status(Status::Insert, stdout, buffer)?;
             insert_mode(buffer, stdout, status_line)?;
         }
         Status::Normal => {
-            status_line.change_status(Status::Normal, stdout)?;
+            status_line.change_status(Status::Normal, stdout, buffer)?;
             normal_mode::normal_mode(buffer, stdout, status_line)?;
         }
         Status::Visual => (),
     }
 
-    status_line.write_status(stdout)?;
+    status_line.write_status(stdout, buffer)?;
     Ok(())
 }
 
@@ -110,19 +110,27 @@ fn insert_mode(
                 event::KeyCode::Left => {
                     if buffer.current_col != 0 {
                         buffer.current_col -= 1;
-                        buffer.update_cursor(&mut stdout)?;
+                        buffer.update_cursor(stdout)?;
                     }
                 }
                 event::KeyCode::Right => {
-                    if buffer.current_col != buffer.lines.get(buffer.current_line).unwrap().len() {
-                        buffer.current_col += 1;
-                        buffer.update_cursor(&mut stdout)?;
+                    match buffer.get_current_line() {
+                        Ok(line) => {
+                            if buffer.current_col != buffer.lines.get(line).unwrap().len() {
+                                buffer.current_col += 1;
+                            }
+                        }
+                        Err(_e) => {
+                            buffer.current_col += 1;
+                        }
                     }
+                    buffer.update_cursor(stdout)?;
                 }
-                _ => {}
+                _ => (),
             }
-            status_line.write_status(stdout)?;
         }
+        buffer.update_cursor(stdout)?;
+        status_line.write_status(stdout, buffer)?;
     }
     change_mode(Status::Normal, buffer, &mut stdout, status_line)?;
 
@@ -160,7 +168,8 @@ impl StatusLine {
             filename: buffer.filename.clone(),
         }
     }
-    fn write_status(&mut self, stdout: &mut Stdout) -> io::Result<()> {
+    fn write_status(&mut self, stdout: &mut Stdout, buffer: &mut Buffer) -> io::Result<()> {
+        let gcl = buffer.get_current_line()?.clone();
         stdout.execute(cursor::SavePosition)?;
         stdout.execute(cursor::MoveTo(0, self.rows - 2))?;
         stdout.execute(crossterm::style::SetBackgroundColor(
@@ -168,8 +177,13 @@ impl StatusLine {
         ))?;
         stdout.write(
             format!(
-                "{} -- '{}' -current row: {} and column-",
-                self.status, self.filename, self.rows
+                "{} -- '{}' get_current_line: {} col: {} current_line: {} top row: {}",
+                self.status,
+                self.filename,
+                gcl,
+                buffer.current_col,
+                buffer.current_line,
+                buffer.top_row
             )
             .as_bytes(),
         )?;
@@ -177,9 +191,14 @@ impl StatusLine {
         stdout.execute(cursor::RestorePosition)?;
         Ok(())
     }
-    fn change_status(&mut self, status: Status, stdout: &mut Stdout) -> io::Result<()> {
+    fn change_status(
+        &mut self,
+        status: Status,
+        stdout: &mut Stdout,
+        buffer: &mut Buffer,
+    ) -> io::Result<()> {
         self.status = status;
-        self.write_status(stdout)?;
+        self.write_status(stdout, buffer)?;
         Ok(())
     }
     fn write_commands(&mut self, stdout: &mut Stdout, start_char: char) -> io::Result<String> {
@@ -247,6 +266,7 @@ struct Buffer {
     current_line: usize,
     current_col: usize,
     filename: String,
+    top_row: i16, //holds current postion in the buffer (for scrolling)
 }
 impl Buffer {
     fn new(name: Option<String>, stdout: &mut Stdout) -> io::Result<Buffer> {
@@ -284,17 +304,32 @@ impl Buffer {
             current_line: 0,
             current_col: 0,
             filename,
+            top_row: 0,
         })
     }
+    fn get_current_line(&mut self) -> io::Result<usize> {
+        //FIXME this does not really make sense for negative numbers
+        //but prob wont have any real effect
+        let (_, row) = cursor::position()?;
+        let real_row = (row) as isize + self.top_row as isize; //row -1 because 0 based is desired
+        if real_row < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "negative line index",
+            ));
+        }
+        Ok(real_row as usize) //will not fail because <0 cases already handled manually
+    }
     fn update_cursor(&mut self, stdout: &mut Stdout) -> io::Result<()> {
-        if self.lines.get(self.current_line).unwrap().len() >= self.current_col {
+        let line = self.get_current_line().unwrap();
+        if self.lines.get(line).unwrap_or(&"".to_string()).len() >= self.current_col {
             stdout.execute(cursor::MoveTo(
                 self.current_col as u16,
                 self.current_line as u16,
             ))?;
         } else {
             stdout.execute(cursor::MoveTo(
-                self.lines.get(self.current_line).unwrap().len() as u16,
+                self.lines.get(line).unwrap_or(&"".to_string()).len() as u16,
                 self.current_line as u16,
             ))?;
         }
@@ -302,21 +337,22 @@ impl Buffer {
     }
     fn push(&mut self, c: char, stdout: &mut Stdout) -> io::Result<()> {
         //ensure current column is in the correct spot (can be offset by moving)
+        let real_line = self.get_current_line()?;
         if self.current_col
             == self
                 .lines
-                .get(self.current_line)
+                .get(real_line)
                 .expect("something happened getting lines.get(current_line)")
                 .len()
         {
             //case where the cursor is at the end of the line
-            self.lines.get_mut(self.current_line).unwrap().push(c);
+            self.lines.get_mut(real_line).unwrap().push(c);
             self.current_col += 1;
             stdout.write(c.to_string().as_bytes())?;
             Ok(())
         } else {
             //case where cursor is somewhere in the middle of a line
-            let cline = self.lines.get_mut(self.current_line).unwrap();
+            let cline = self.lines.get_mut(real_line).unwrap();
             let (s1, s2) = cline.split_at(self.current_col);
             let mut new_line = s1.to_string();
             new_line.push(c);
@@ -326,7 +362,7 @@ impl Buffer {
                                //clear the current line
             stdout.execute(cursor::SavePosition)?; //save that position
             stdout.execute(cursor::MoveToColumn(0))?;
-            stdout.write(self.lines.get(self.current_line).unwrap().as_bytes())?;
+            stdout.write(self.lines.get(real_line).unwrap().as_bytes())?;
             stdout.execute(cursor::RestorePosition)?;
             self.current_col += 1;
             self.update_cursor(stdout)?;
@@ -335,11 +371,8 @@ impl Buffer {
         }
     }
     fn pop(&mut self) -> char {
-        self.lines
-            .get_mut(self.current_line)
-            .unwrap()
-            .pop()
-            .unwrap()
+        let row = self.get_current_line().unwrap();
+        self.lines.get_mut(row).unwrap().pop().unwrap()
     }
     fn newline(&mut self, stdout: &mut Stdout) -> io::Result<()> {
         //function for moving to the next line when enter pressed.
@@ -399,25 +432,27 @@ impl Buffer {
         Ok(())
     }
     fn backspace(&mut self, stdout: &mut Stdout) -> io::Result<()> {
+        let mut real_line = self.get_current_line()?;
         self.update_cursor(stdout)?;
         if cursor::position().unwrap() == (0, 0) {
             //nothing to backspace.
             return Ok(());
         }
-        if self.current_col == self.lines.get(self.current_line).unwrap().len() {
+        if self.current_col == self.lines.get(real_line).unwrap().len() {
             if self.current_col < 1 {
                 //delete a line
                 if self.total_lines <= 0 {
                     return Ok(());
                 }
-                self.lines.remove(self.current_line);
+                self.lines.remove(real_line);
                 self.current_line -= 1;
+                real_line -= 1;
                 self.total_lines -= 1;
-                if self.lines.get(self.current_line).unwrap().len() == 0 {
+                if self.lines.get(real_line).unwrap().len() == 0 {
                     stdout.execute(cursor::MoveToPreviousLine(1))?;
                     self.current_col = 0;
                 } else {
-                    self.current_col = self.lines.get(self.current_line).unwrap().len();
+                    self.current_col = self.lines.get(real_line).unwrap().len();
                     stdout.execute(cursor::MoveUp(1))?;
                     stdout.execute(cursor::MoveRight(self.current_col as u16))?;
                 }
@@ -436,26 +471,24 @@ impl Buffer {
                     return Ok(());
                 }
                 //all of the contents of the line can be saved
-                let contents = self.lines.get(self.current_line).unwrap().clone();
+                let contents = self.lines.get(real_line).unwrap().clone();
 
-                self.lines.remove(self.current_line);
+                self.lines.remove(real_line);
                 self.current_line -= 1;
+                real_line -= 1;
                 self.total_lines -= 1;
-                self.current_col = self.lines.get(self.current_line).unwrap().len();
+                self.current_col = self.lines.get(real_line).unwrap().len();
                 //clear the current line
                 stdout.execute(terminal::Clear(ClearType::CurrentLine))?;
                 self.update_cursor(stdout)?;
                 stdout.write(&contents.as_bytes())?;
-                self.lines
-                    .get_mut(self.current_line)
-                    .unwrap()
-                    .push_str(&contents);
-                self.current_col = self.lines.get(self.current_line).unwrap().len();
+                self.lines.get_mut(real_line).unwrap().push_str(&contents);
+                self.current_col = self.lines.get(real_line).unwrap().len();
                 self.update_cursor(stdout)?;
             } else {
                 //split the line pop from the first line and clear the rest and then combine them
                 //back is the idea
-                let cline = self.lines.get_mut(self.current_line).unwrap();
+                let cline = self.lines.get_mut(real_line).unwrap();
                 let (s1, s2) = cline.split_at(self.current_col);
                 let s2_clone = s2.to_string().clone();
                 let mut new_line = s1.to_string();
@@ -473,6 +506,42 @@ impl Buffer {
             }
         }
         Ok(())
+    }
+    //function for scrolling the screen down (and maybe up also?)
+    fn scroll_buf(&mut self, lines_scrolled: i8, stdout: &mut Stdout) -> io::Result<()> {
+        //move every liune down one
+        let max_lines = self.get_term_rows()?;
+        let mut i = self.top_row + lines_scrolled as i16;
+        //clear the buffer and write max lines amount of lines, starting with lines line i
+        //saving cursor position is unnecessary here
+        stdout.execute(cursor::MoveTo(0, 0))?;
+        let mut lines_printed = 0;
+        while lines_printed < max_lines {
+            if i < 0 {
+                stdout.execute(Clear(ClearType::CurrentLine))?;
+            } else {
+                match self.lines.get(i as usize) {
+                    Some(line) => {
+                        stdout.write_all(line.as_bytes())?;
+                        stdout.execute(Clear(ClearType::UntilNewLine))?;
+                    }
+                    None => {
+                        stdout.execute(Clear(ClearType::CurrentLine))?;
+                    }
+                }
+            }
+            lines_printed += 1;
+            i += 1;
+            stdout.execute(cursor::MoveToNextLine(1))?;
+        }
+        self.update_cursor(stdout)?;
+        stdout.flush()?;
+        self.top_row += lines_scrolled as i16;
+        Ok(())
+    }
+    fn get_term_rows(&self) -> io::Result<u16> {
+        let (_, rows) = terminal::size()?;
+        Ok(rows - 3) //status bar, bottom line, and 0 based. so -3
     }
     fn display(self) {
         //for debugging, just write everything in the bufferf
