@@ -12,6 +12,7 @@ use std::{
     io::{self, BufRead, BufReader, Write},
     time::Duration,
 };
+//write up a quick little comment for commit test
 fn main() -> io::Result<()> {
     //set up the environemt (clear the area and stuff) and get stdout handle
     let mut stdout = io::stdout(); //get a handle to the stdout file
