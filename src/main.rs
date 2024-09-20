@@ -428,21 +428,69 @@ impl Buffer {
         //stuff is really bad. i want this to be significantly more dynamic, all the if statements
         //essentially hardcode everything, scrolling pretty much killed my logic.
         let first_col = 0; //more readable and i might change this at some point
-        let mut line = self.get_current_line()?;
+        let line = self.get_current_line()?;
         self.update_cursor(stdout)?;
         //there are really only 2 major cases when pressing backspace:
         //the cursor is at the start of the line eg col 1, and when the cursor is not.
         //when it is, a line must be removed and all next lines must be moved down.
         //contents on that line must be moved to the previous line, as well as the cursor itself.
         if self.current_col == first_col {
+            if line == 0 {
+                return Ok(()); //first spot on file, do nothing
+            }
             let mut line_contents = String::from("");
             if !self.lines.get(line).unwrap().is_empty() {
                 //if the line is nonempty,
                 line_contents.push_str(self.lines.get(line).unwrap());
             }
+            //place the line contents onto the previous line
+            self.current_col = self.lines.get(line - 1).unwrap().len();
+            //write the contents at the end of the previous line
+            stdout.execute(cursor::MoveTo(self.current_col as u16, (line - 1) as u16))?;
+            stdout.write_all(line_contents.as_bytes())?;
+            self.lines
+                .get_mut(line - 1)
+                .unwrap()
+                .push_str(&line_contents);
+            stdout.execute(cursor::MoveToNextLine(1))?; //move back to origional line, work from
+                                                        //there
+
             //remove the current line
             self.lines.remove(line);
-            //clear everything on the current line,
+            self.total_lines -= 1;
+            //clear everything on the current line, and everything under it
+            stdout.execute(terminal::Clear(ClearType::FromCursorDown))?;
+            //now from current position, which is still col 0 of the last now removed
+            //line, rewrite everything under
+            let mut i = line.clone();
+            while i < self.total_lines {
+                stdout.write_all(self.lines.get(i).unwrap().as_bytes())?;
+                stdout.execute(cursor::MoveToNextLine(1))?;
+                i += 1;
+            }
+            self.current_line -= 1;
+
+            self.update_cursor(stdout)?;
+        }
+        //if current col == first_col (0th col)
+        else {
+            //this is the case where backspacing from somewhere in a line, not the first place
+            //split the string at the current column
+            let cstring = self.lines.get_mut(line).unwrap();
+            let (s1, s2) = cstring.split_at(self.current_col);
+            let string2_clone = s2.to_string(); //.clone kills the borrow checker, this actually
+                                                //clones (what a stupid .clone() method like what how does it not do a full clone mind
+                                                //blowingly stupid for such an incredible language but there probably reasons to big
+                                                //for my puny vim loving brain to comprehend
+            let mut changed_string = s1.to_string();
+            changed_string.pop(); //because the string slice.pop will do nothing to s1
+            *cstring = changed_string + s2;
+            //new line is constructed, now we must update visually
+            //move cursor back one, delete until end of line, place back s2
+            self.current_col -= 1;
+            self.update_cursor(stdout)?;
+            stdout.execute(Clear(ClearType::UntilNewLine))?;
+            stdout.write_all(string2_clone.as_bytes())?;
         }
 
         Ok(())
