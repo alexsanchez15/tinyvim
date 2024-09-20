@@ -6,6 +6,7 @@ use crossterm::{cursor, event, terminal};
 use std::fmt::Display;
 use std::io::Result;
 use std::io::Stdout;
+use std::process::exit;
 use std::str::FromStr;
 pub fn normal_mode(
     buffer: &mut Buffer,
@@ -101,7 +102,7 @@ fn process_ex_commands(
                     status_line
                         .write_to_status_line(stdout, format!("wrote to {}", buffer.filename))?;
                 }
-                ExCommands::Quit => {}
+                ExCommands::Quit => exit(0),
                 ExCommands::Edit => {}
             },
             Err(_) => {}
