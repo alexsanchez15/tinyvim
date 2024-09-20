@@ -103,7 +103,7 @@ fn insert_mode(
                     }
                 }
                 event::KeyCode::Down => {
-                    if buffer.current_line != buffer.total_lines {
+                    if (buffer.current_line as i16) < buffer.total_lines as i16 - buffer.top_row {
                         buffer.current_line += 1;
                         buffer.update_cursor(&mut stdout)?;
                     }
@@ -336,6 +336,13 @@ impl Buffer {
         }
         Ok(())
     }
+    fn fix_cursor(&mut self) -> io::Result<()> {
+        let (col, _) = cursor::position()?;
+        if self.current_col != col as usize {
+            self.current_col = col as usize;
+        }
+        Ok(())
+    }
     fn push(&mut self, c: char, stdout: &mut Stdout) -> io::Result<()> {
         //ensure current column is in the correct spot (can be offset by moving)
         let real_line = self.get_current_line()?;
@@ -371,11 +378,9 @@ impl Buffer {
             Ok(())
         }
     }
-    fn pop(&mut self) -> char {
-        let row = self.get_current_line().unwrap();
-        self.lines.get_mut(row).unwrap().pop().unwrap()
-    }
     fn newline(&mut self, stdout: &mut Stdout) -> io::Result<()> {
+        self.update_cursor(stdout)?;
+        self.fix_cursor()?;
         //function for moving to the next line when enter pressed.
         //first thing needed: put a new line onto the lines vector
         self.lines.push(String::new());
@@ -429,7 +434,7 @@ impl Buffer {
         //essentially hardcode everything, scrolling pretty much killed my logic.
         let first_col = 0; //more readable and i might change this at some point
         let line = self.get_current_line()?;
-        self.update_cursor(stdout)?;
+        self.fix_cursor()?;
         //there are really only 2 major cases when pressing backspace:
         //the cursor is at the start of the line eg col 1, and when the cursor is not.
         //when it is, a line must be removed and all next lines must be moved down.
@@ -446,7 +451,13 @@ impl Buffer {
             //place the line contents onto the previous line
             self.current_col = self.lines.get(line - 1).unwrap().len();
             //write the contents at the end of the previous line
-            stdout.execute(cursor::MoveTo(self.current_col as u16, (line - 1) as u16))?;
+            //this next line has to use self.current_line ie the previous physical line
+            //a bit confusing honestly, but this is functional. not my best code but
+            //better than the origional version by a lot.
+            stdout.execute(cursor::MoveTo(
+                self.current_col as u16,
+                (self.current_line - 1) as u16,
+            ))?;
             stdout.write_all(line_contents.as_bytes())?;
             self.lines
                 .get_mut(line - 1)
@@ -463,7 +474,8 @@ impl Buffer {
             //now from current position, which is still col 0 of the last now removed
             //line, rewrite everything under
             let mut i = line.clone();
-            while i < self.total_lines {
+            while i <= self.total_lines {
+                //total_lines is 0 based
                 stdout.write_all(self.lines.get(i).unwrap().as_bytes())?;
                 stdout.execute(cursor::MoveToNextLine(1))?;
                 i += 1;
