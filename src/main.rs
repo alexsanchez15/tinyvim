@@ -7,7 +7,6 @@ use crossterm::{
     ExecutableCommand,
 };
 use std::{env, fs};
-use std::{fs::File, io::Stdout, thread::sleep};
 use std::{
     io::{self, BufRead, BufReader, Write},
     time::Duration,
